@@ -5,6 +5,9 @@ import websockets
 import json
 import queue
 import math
+import pycozmo
+import time
+
 
 # the following is to avoid pygame.locals.K_UP but allow usage of K_UP
 # from pygame.locals import *
@@ -16,7 +19,7 @@ LIGHT_GREEN = (0, 255, 0)
 
 class Robot(pygame.sprite.Sprite):
     def __init__(self):
-        pygame.sprite.Sprite.__init__(self)        
+        pygame.sprite.Sprite.__init__(self)
         self.green_image = pygame.image.load("robot_green.png").convert_alpha()
         self.red_image = pygame.image.load("robot_red.png").convert_alpha()
         self.image = self.red_image
@@ -47,7 +50,7 @@ async def rotate_robot(robot, direction):
     else:
         rotation_direction = -1
 
-    print("Rotating robot", num_steps, "steps of", rotation_step, "degrees in direction", rotation_direction)
+    print("Rotating robot", num_steps, "steps of", math.degrees(rotation_step) , "degrees in direction", rotation_direction)
 
     for i in range(num_steps):
         # Rotate the robot
@@ -55,27 +58,37 @@ async def rotate_robot(robot, direction):
         await rotate_robot_image(robot)
         robot.rect = robot.image.get_rect(center=robot.rect.center)
         await asyncio.sleep(time_per_update)
+        # print line with no carriage return to avoid multiple lines so with a return to the beginning of the line
+
+        print("Robot direction is", math.floor(math.degrees(robot.rotation_angle)), "    ", end="\r")
 
     # Rotate the robot to the final angle
     robot.rotation_angle = direction
     await rotate_robot_image(robot)
-    robot.rect = robot.image.get_rect(center=robot.rect.center)                
+    robot.rect = robot.image.get_rect(center=robot.rect.center)
+    print("Robot direction is", math.floor(math.degrees(robot.rotation_angle)), "    ", end="\r")
 
 async def move_robot(robot, x, y, oldX, oldY):
     # Calculate the distance and direction to move
     dx, dy = x - oldX, y - oldY
     distance = math.sqrt(dx**2 + dy**2)
-    direction = math.atan2(dy, dx)
+    direction = math.atan2(dy, dx) # direction in radians
 
     #if the robot rotation angle is not the same as the new direction
     #then rotate the robot to the new direction
 
     if robot.rotation_angle != direction:
-        print("Rotating robot from", robot.rotation_angle, " to", direction)
-        await rotate_robot(robot, direction)    
+        #send Rotate Command to cozmo queue
+        cozmo_queue.put(["Rotate", direction])
+
+        print("Rotating robot from", math.degrees(robot.rotation_angle), "to", math.degrees(direction))
+        await rotate_robot(robot, direction)
+
+    #send Move Command to cozmo queue
+    cozmo_queue.put(["Advance", distance])
 
     # Set the desired speed in pixels per second
-    speed = 20  # 100 pixels per second
+    speed = 80  # 100 pixels per second
 
     # Calculate the time between updates and the number of steps
     time_per_update = 0.1  # time between updates in seconds
@@ -85,7 +98,7 @@ async def move_robot(robot, x, y, oldX, oldY):
     accumulated_dx = 0
     accumulated_dy = 0
 
-    print("Moving robot", num_steps, "steps of ", speed, "px/s in direction", direction)
+    print("Moving robot", num_steps, "steps of ", speed, "px/s in direction", math.degrees(direction))
 
     step_size = speed * time_per_update
     dx_step = step_size * math.cos(direction)
@@ -102,11 +115,11 @@ async def move_robot(robot, x, y, oldX, oldY):
             # Reset the accumulated movement values but keep the remainder
             accumulated_dx -= int(accumulated_dx)
             accumulated_dy -= int(accumulated_dy)
-            
+
         await asyncio.sleep(time_per_update)
-    
+
     # Move the robot to the final position
-    robot.rect.center = (x, y)    
+    robot.rect.center = (x, y)
     # draw the line from the old position to the new position if the pen is down
     if robot.pen_down:
         pygame.draw.line(robot_lines_surface, BLACK, (oldX, oldY), (x, y), 3)
@@ -118,7 +131,7 @@ async def command_robot(robot, command_queue):
 
         # Process the command
         x, y, oldX, oldY = command
-                
+
         print("Moving robot from", oldX, oldY, " to", x, y)
 
         # if the robot position is not the same as the new oldX, oldY at 1 pixel distance
@@ -126,17 +139,17 @@ async def command_robot(robot, command_queue):
         if math.sqrt((robot.rect.center[0] - oldX)**2 + (robot.rect.center[1] - oldY)**2) > 1:
             print("Moving robot to", oldX, oldY)
             robot.pen_down = False
+            cozmo_queue.put(["Pen", robot.pen_down])
             await move_robot(robot, oldX, oldY, robot.rect.center[0], robot.rect.center[1])
+            robot.pen_down = True
+            cozmo_queue.put(["Pen", robot.pen_down])
 
         # Move the robot
-        robot.pen_down = True
         await move_robot(robot, x, y, oldX, oldY)
-      
-        
 
 async def handle_connection(websocket, path):
     print("New connection:", websocket.remote_address)
-    
+
     try:
         async for message in websocket:
             print("Received message:", message)
@@ -146,21 +159,21 @@ async def handle_connection(websocket, path):
             command = data['type']
 
             # Process the drawing commands
-            if command == 'goToXY':                
-                #at this point we are not doing anything with the target_id. 
-                # target_id = data["target"] 
+            if command == 'goToXY':
+                #at this point we are not doing anything with the target_id.
+                # target_id = data["target"]
 
                 x, y = data['x'], data['y']
                 oldX, oldY = data['oldX'], data['oldY']
 
-                #update coordinates since the 0,0 is in the middle of the screen                
+                #update coordinates since the 0,0 is in the middle of the screen
                 # and Y axis is inverted so we need to invert the Y coordinate
                 x = x + WIDTH/2
                 y = HEIGHT/2 - y
                 oldX = oldX + WIDTH/2
                 oldY = HEIGHT/2 - oldY
-                
-                # Perform the goToXY action for the target with the given ID 
+
+                # Perform the goToXY action for the target with the given ID
                 # and draw the line on the screen (light green)
                 pygame.draw.line(command_lines_surface, LIGHT_GREEN, (oldX, oldY), (x, y), 1)
                 pygame.display.flip()
@@ -168,11 +181,11 @@ async def handle_connection(websocket, path):
                 # add the command to the queue
                 command_queue.put((x, y, oldX, oldY))
 
-            
+
             elif command == 'clear':
                 screen.fill(WHITE)
                 pygame.display.flip()
-        
+
     except websockets.ConnectionClosed:
         print("Connection closed:", websocket.remote_address)
 
@@ -197,16 +210,34 @@ async def send_gotoxy_command(oldX, oldY, x, y):
         "oldX": oldX,
         "oldY": oldY
     }
-    
-    websocket = await websockets.connect('ws://localhost:8765')  
+
+    websocket = await websockets.connect('ws://localhost:8765')
     # Send the command to the robot
     await websocket.send(json.dumps(command))
     await websocket.close()
 
-
+def run_cozmo():
+    with pycozmo.connect() as cli:
+        cli.set_head_angle(pycozmo.MAX_HEAD_ANGLE.radians)
+        time.sleep(1)
+        cli.set_head_angle(pycozmo.MIN_HEAD_ANGLE.radians)
+        time.sleep(1)
+        cli.set_head_angle((pycozmo.MAX_HEAD_ANGLE.radians-pycozmo.MIN_HEAD_ANGLE.radians)/2)
+        time.sleep(1)
+        while True:
+            # Get the next command (Move or Rotate] from the queue (blocks if the queue is empty)
+            command = cozmo_queue.get()
+            if command[0] == "Advance":
+                cli.drive_straight(pycozmo.util.Distance(mm=command[1]).mm, pycozmo.util.Speed(mmps=100.0).mmps)
+            elif command[0] == "Rotate":
+                cli.turn_in_place(pycozmo.util.Angle(degrees=command[1]).degrees)
+            elif command[0] == "Pen":
+                cli.set_lift_height(pycozmo.MIN_LIFT_HEIGHT.mm if command[1] else pycozmo.MAX_LIFT_HEIGHT.mm)
+            time.sleep(1)
 
 # Create a queue for the drawing commands
 command_queue = queue.Queue()
+cozmo_queue = queue.Queue()
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -231,6 +262,10 @@ websocket_server_thread.start()
 # Start the robot in a separate thread
 robot_thread = threading.Thread(target=run_robot, daemon=True)
 robot_thread.start()
+
+# Start the Cozmo in a separate thread
+cozmo_thread = threading.Thread(target=run_cozmo, daemon=True)
+cozmo_thread.start()
 
 # Create a clock object to control the frame rate
 clock = pygame.time.Clock()
@@ -262,8 +297,8 @@ while True:
                 asyncio.run(send_gotoxy_command(100, -100, -100, -100))
                 asyncio.run(send_gotoxy_command(-100, -100, -100, 100))
                 asyncio.run(send_gotoxy_command(-100, 100, 100, 100))
-                
-    
+
+
     screen.fill(WHITE)
 
     # Draw the commad lines
@@ -272,10 +307,8 @@ while True:
     # Draw the robot lines
     screen.blit(robot_lines_surface, (0, 0))
 
-    # Draw the robot    
+    # Draw the robot
     robot_group.draw(screen)
 
     # Update the display
     pygame.display.flip()
-
-    
